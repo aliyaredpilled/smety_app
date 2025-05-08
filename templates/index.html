@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Обработка смет</title>
+    <!-- Google Fonts убраны -->
+    <!-- Подключаем CSS для стилей -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <h1>Загрузка и обработка смет</h1>
+
+        <!-- Отображение ошибок Flask (если есть) -->
+        {% if error %}
+            <div class="alert alert-danger">{{ error }}</div>
+        {% endif %}
+
+        <!-- Форма для загрузки -->
+        <form id="upload-form" action="/upload" method="post" enctype="multipart/form-data">
+            <div class="form-group">
+                <label for="smeta_type">Тип сметы:</label>
+                <select id="smeta_type" name="smeta_type" required>
+                    <option value="" disabled selected>Выберите тип</option>
+                    <!-- Динамическая генерация опций -->
+                    {% for type_name in smeta_types %}
+                        <option value="{{ type_name }}">{{ type_name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <!-- Дополнительный выбор версии для Турбосметчика (оставлен) -->
+            <div class="form-group" id="turbosmetchik-version-group" style="display: none;">
+                <label for="turbosmetchik_version">Версия Турбосметчика:</label>
+                <select id="turbosmetchik_version" name="turbosmetchik_version">
+                    <option value="" disabled selected>Выберите версию</option>
+                    <option value="1">1</option>
+                    <option value="2">2</option>
+                    <option value="3">3</option>
+                </select>
+            </div>
+
+            <!-- Упрощенный инпут файла -->
+            <div class="form-group">
+                <label for="file">Выберите файл (Excel или ZIP):</label>
+                <input type="file" id="file" name="file" accept=".xlsx, .xlsm, .zip" required>
+            </div>
+
+            <!-- Кнопка теперь НЕ будет disabled по умолчанию -->
+            <button type="submit" id="submit-button">Запустить обработку</button>
+        </form>
+
+        <!-- Индикатор прогресса/статуса -->
+        <div id="progress-container" style="display: none;">
+             <div class="progress-bar-container">
+                 <div id="progress-bar" class="progress-bar"></div>
+             </div>
+            <div id="status-message">Идет обработка...</div>
+        </div>
+
+        <!-- Ссылка для скачивания результата -->
+        <div id="result-container" style="display: none;">
+            <p id="result-message"></p>
+            <a id="download-link" href="#" class="button" download>Скачать результаты (ZIP)</a>
+        </div>
+
+         <!-- Область для вывода сообщений об ошибках JS -->
+         <div id="error-container" class="alert alert-danger" style="display: none;"></div>
+
+    </div>
+
+    <!-- Подключаем JavaScript -->
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
