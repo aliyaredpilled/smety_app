@@ -1,6 +1,6 @@
-import os
 import uuid
 import zipfile
+import os
 import shutil
 import traceback
 import time # Добавим для имитации работы и очистки
@@ -15,6 +15,14 @@ from formatting import (
     auto_adjust_column_width,
     apply_reference_widths,
     apply_formatting
+)
+import logging
+from openpyxl.utils import get_column_letter
+
+# --- Настройка логирования ---
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] %(levelname)s: %(message)s',
 )
 
 # --- Конфигурация Flask ---
@@ -35,6 +43,7 @@ os.makedirs(REFERENCE_FOLDER, exist_ok=True)
 
 REFERENCE_SMETA_RU = os.path.join(REFERENCE_FOLDER, "Смета ру.xlsm") # Укажите точное имя вашего референсного файла
 REFERENCE_TURBOSMETCHIK = os.path.join(REFERENCE_FOLDER, "Турбосметчик1,2,3.xlsm") # <-- ДОБАВЛЕНО
+REFERENCE_GRANDSMETA = os.path.join(REFERENCE_FOLDER, "Пример1 2.xlsx")
 
 ALLOWED_EXTENSIONS = {'xlsx', 'xlsm', 'zip'}
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
@@ -62,7 +71,7 @@ def index():
         smeta_types = dispatcher.get_available_processor_types()
         return render_template('index.html', smeta_types=smeta_types)
     except Exception as e:
-        print(f"Ошибка при загрузке типов смет: {e}")
+        logging.error(f"Ошибка при загрузке типов смет: {e}")
         traceback.print_exc() # Добавим вывод traceback для диагностики
         # Можно вернуть страницу с ошибкой или пустой список
         return render_template('index.html', smeta_types=[], error="Не удалось загрузить типы смет.")
@@ -94,24 +103,24 @@ def upload_file():
     try: # Главный try для всей обработки запроса
         if file and allowed_file(file.filename):
             original_filename_unsafe = file.filename
-            print(f"({client_session_id}) Получен файл: {original_filename_unsafe}")
+            logging.info(f"({client_session_id}) Получен файл: {original_filename_unsafe}")
             is_zip = original_filename_unsafe.lower().endswith('.zip')
             is_excel = original_filename_unsafe.lower().endswith(('.xlsx', '.xlsm'))
             safe_filename_for_saving = secure_filename(original_filename_unsafe)
             if not safe_filename_for_saving:
                  extension = ".zip" if is_zip else (".xlsx" if is_excel else ".file")
                  safe_filename_for_saving = f"uploaded_file{extension}" # Упростили имя
-                 print(f"({client_session_id}) secure_filename пустое, сгенерировано: {safe_filename_for_saving}")
+                 logging.info(f"({client_session_id}) secure_filename пустое, сгенерировано: {safe_filename_for_saving}")
 
             saved_file_path = os.path.join(upload_path, safe_filename_for_saving)
             file.save(saved_file_path)
-            print(f"({client_session_id}) Сохранен как: {saved_file_path}")
+            logging.info(f"({client_session_id}) Сохранен как: {saved_file_path}")
 
             files_to_process_info = []
             if is_zip:
                 # --- Инициализация статуса для ZIP ---
                 processing_status[client_session_id] = {"processed": 0, "total": 0, "status": "Распаковка...", "error": None}
-                print(f"({client_session_id}) ZIP архив. Распаковка...")
+                logging.info(f"({client_session_id}) ZIP архив. Распаковка...")
                 # ------------------------------------
                 extract_path = os.path.join(upload_path, 'extracted')
                 os.makedirs(extract_path, exist_ok=True)
@@ -126,7 +135,7 @@ def upload_file():
                         # --- Обновляем total в статусе ---
                         processing_status[client_session_id]["total"] = len(file_list_in_zip)
                         processing_status[client_session_id]["status"] = "Найдено файлов: {}".format(len(file_list_in_zip))
-                        print(f"({client_session_id}) Найдено и отсортировано файлов в ZIP: {[m.filename for m in file_list_in_zip]}")
+                        logging.info(f"({client_session_id}) Найдено и отсортировано файлов в ZIP: {[m.filename for m in file_list_in_zip]}")
                         # ---------------------------------
 
                         for member in file_list_in_zip:
@@ -136,7 +145,7 @@ def upload_file():
                             try:
                                 with zip_ref.open(member) as source, open(target_path, "wb") as target: shutil.copyfileobj(source, target)
                                 files_to_process_info.append({"path": target_path, "original_name": filename_decoded})
-                            except Exception as extract_err: print(f"  [WARN] ({client_session_id}) Не удалось извлечь {filename_decoded}: {extract_err}")
+                            except Exception as extract_err: logging.warning(f"  [WARN] ({client_session_id}) Не удалось извлечь {filename_decoded}: {extract_err}")
 
                     if not files_to_process_info: raise ValueError("В архиве не найдено поддерживаемых Excel файлов.")
 
@@ -145,7 +154,7 @@ def upload_file():
                 except Exception as e: raise ValueError(f"Ошибка при распаковке ZIP: {e}")
 
             elif is_excel:
-                print(f"({client_session_id}) Одиночный Excel файл.")
+                logging.info(f"({client_session_id}) Одиночный Excel файл.")
                  # --- Инициализация статуса для одного файла ---
                 processing_status[client_session_id] = {"processed": 0, "total": 1, "status": "Подготовка...", "error": None}
                 # ------------------------------------------
@@ -165,25 +174,25 @@ def upload_file():
                 # --- Обновляем статус перед обработкой файла ---
                 current_total = processing_status.get(client_session_id, {}).get("total", len(files_to_process_info))
                 processing_status[client_session_id]["status"] = f"Обработка файла {i+1} из {current_total}: {original_fname}..."
-                print(f"\n({client_session_id}) {processing_status[client_session_id]['status']}")
+                logging.info(f"\n({client_session_id}) {processing_status[client_session_id]['status']}")
                 # ---------------------------------------------
 
                 try:
                     headers, data_rows = dispatcher.run_processor(smeta_type=smeta_type, input_path=input_fpath)
                     if headers and data_rows is not None:
-                        print(f"  ({client_session_id}) Получено строк данных: {len(data_rows)}")
+                        logging.info(f"  ({client_session_id}) Получено строк данных: {len(data_rows)}")
                         collected_results.append((original_fname, headers, data_rows))
                         if common_headers is None: common_headers = headers
-                        elif common_headers != headers: print("[WARN] Заголовки отличаются!")
+                        elif common_headers != headers: logging.warning("[WARN] Заголовки отличаются!")
                         # --- Обновляем processed count в статусе ПОСЛЕ УСПЕХА ---
                         processing_status[client_session_id]["processed"] += 1
                         # ------------------------------------------------------
                     else:
-                        print(f"  [ОШИБКА] ({client_session_id}) Обработчик не вернул данные для {original_fname}")
+                        logging.warning(f"  [ОШИБКА] ({client_session_id}) Обработчик не вернул данные для {original_fname}")
                         processing_status[client_session_id]["error"] = f"Ошибка обработки {original_fname}" # Отмечаем ошибку в статусе
                         has_errors = True
                 except Exception as e:
-                    print(f"  [КРИТИЧЕСКАЯ ОШИБКА] ({client_session_id}) при обработке данных из {original_fname}: {e}")
+                    logging.error(f"  [КРИТИЧЕСКАЯ ОШИБКА] ({client_session_id}) при обработке данных из {original_fname}: {e}")
                     processing_status[client_session_id]["error"] = f"Критическая ошибка при обработке {original_fname}"
                     traceback.print_exc(); has_errors = True
 
@@ -205,23 +214,25 @@ def upload_file():
             reference_file_to_read = None # Определяем какой файл читать
             if smeta_type == "Смета ру":
                 reference_file_to_read = REFERENCE_SMETA_RU
-            elif smeta_type.startswith("Турбосметчик-"): # <-- ИСПРАВЛЕНО: Проверяем начало строки
+            elif smeta_type.startswith("Турбосметчик-"):
                  reference_file_to_read = REFERENCE_TURBOSMETCHIK
+            elif smeta_type == "Грандсмета":
+                 reference_file_to_read = REFERENCE_GRANDSMETA
 
             if reference_file_to_read and os.path.exists(reference_file_to_read):
-                print(f"({client_session_id}) Чтение референсных ширин из {os.path.basename(reference_file_to_read)}...") # <-- ИЗМЕНЕНО: Используем переменную
+                logging.info(f"({client_session_id}) Чтение референсных ширин из {os.path.basename(reference_file_to_read)}...") # <-- ИЗМЕНЕНО: Используем переменную
                 try:
                      # Используем импортированный openpyxl
                      wb_ref = openpyxl.load_workbook(filename=reference_file_to_read, data_only=True, keep_vba=False) # <-- ИЗМЕНЕНО: Используем переменную
                      ws_ref = wb_ref.active; reference_widths = []
                      target_columns = ['A', 'B', 'C', 'D', 'E', 'F'] # Те же колонки A-F
                      for col_letter in target_columns: width = ws_ref.column_dimensions[col_letter].width if col_letter in ws_ref.column_dimensions else None; reference_widths.append(width if width is not None else 8.43) # Стандартная ширина 8.43, если не задана
-                     print(f"  ({client_session_id}) Референсные ширины: {reference_widths}"); wb_ref.close()
+                     logging.info(f"  ({client_session_id}) Референсные ширины: {reference_widths}"); wb_ref.close()
                 except Exception as e:
-                    print(f"  [WARN] ({client_session_id}) Ошибка чтения реф. файла ({os.path.basename(reference_file_to_read)}): {e}.") # <-- ИЗМЕНЕНО: Используем переменную
+                    logging.warning(f"  [WARN] ({client_session_id}) Ошибка чтения реф. файла ({os.path.basename(reference_file_to_read)}): {e}.") # <-- ИЗМЕНЕНО: Используем переменную
                     reference_widths = None # Сбрасываем ширины при ошибке
             elif reference_file_to_read: # Если файл должен был быть, но его нет
-                 print(f"  [WARN] ({client_session_id}) Реф. файл не найден: {reference_file_to_read}.")
+                 logging.warning(f"  [WARN] ({client_session_id}) Реф. файл не найден: {reference_file_to_read}.")
             # --- Если reference_file_to_read is None (другой тип сметы), то reference_widths останется None ---
 
             # --- Создание и сохранение итогового файла ---
@@ -252,30 +263,73 @@ def upload_file():
                 safe_output_filename = f"result_{client_session_id}.xlsx"
 
             output_file_path = os.path.join(app.config['RESULTS_FOLDER'], safe_output_filename)
-            print(f"({client_session_id}) Подготовка итогового файла: {safe_output_filename}")
+            logging.info(f"({client_session_id}) Подготовка итогового файла: {safe_output_filename}")
 
             if common_headers: final_ws.append(common_headers)
-            print(f"({client_session_id}) Запись данных в итоговый файл...")
+            logging.info(f"({client_session_id}) Запись данных в итоговый файл...")
             for index, (original_fname, headers, data_rows) in enumerate(collected_results):
                 if len(collected_results) > 1: # Добавляем разделитель, если файлов > 1
                     separator_row_idx = final_ws.max_row + 1; merge_range = f'A{separator_row_idx}:F{separator_row_idx}'
-                    print(f"  ({client_session_id}) Доб. разделитель '{original_fname}' в строку {separator_row_idx}")
+                    logging.info(f"  ({client_session_id}) Доб. разделитель '{original_fname}' в строку {separator_row_idx}")
                     try:
                         final_ws.merge_cells(merge_range); cell = final_ws.cell(row=separator_row_idx, column=1)
                         cell.value = original_fname; cell.alignment = Alignment(horizontal='center', vertical='center'); cell.font = Font(bold=True)
-                    except Exception as merge_err: print(f"  [WARN] ({client_session_id}) Ошибка merge разделителя: {merge_err}"); final_ws.cell(row=separator_row_idx, column=1).value = original_fname
-                for row in data_rows: final_ws.append(row) # Добавляем данные
-                print(f"  ({client_session_id}) Добавлено {len(data_rows)} строк из {original_fname}")
+                    except Exception as merge_err: logging.warning(f"  [WARN] ({client_session_id}) Ошибка merge разделителя: {merge_err}"); final_ws.cell(row=separator_row_idx, column=1).value = original_fname
+                
+                # НОВАЯ ЛОГИКА ЗАПИСИ СТРОК ОТ ПОЛЬЗОВАТЕЛЯ
+                for row_values in data_rows: 
+                    cur = final_ws.max_row + 1
+                    
+                    if not row_values: 
+                        continue
+
+                    first_cell_val = row_values[0]
+
+                    # --- УБИРАЕМ СТАРУЮ ЛОГИКУ ДЛЯ __HEADER__ ---
+                    # if first_cell_val == '__HEADER__':
+                    #    ...
+                    #    continue 
+
+                    # --- Логика для __FOOTER__ (остается без изменений) ---
+                    if first_cell_val == '__FOOTER__':
+                        text = row_values[1] if len(row_values) > 1 else ''
+                        total_val_or_coord = row_values[2] if len(row_values) > 2 else None
+                        
+                        final_ws.cell(row=cur, column=4, value=text) 
+                        final_ws.merge_cells(start_row=cur, start_column=4, end_row=cur, end_column=5)
+                        
+                        if total_val_or_coord is not None:
+                            final_ws.cell(row=cur, column=6, value=total_val_or_coord)
+                        continue 
+
+                    # --- ОБЩАЯ ЛОГИКА ЗАПИСИ ЯЧЕЕК (теперь обработает и новые заголовки) ---
+                    for col_idx_item, cell_val_item in enumerate(row_values, start=1):
+                        if cell_val_item is None: 
+                            # Для новых заголовков это оставит ячейки C, D, E, F пустыми, что и нужно
+                            continue
+                        final_ws.cell(row=cur, column=col_idx_item, value=cell_val_item)
+                    
+                    # --- ДОБАВЛЯЕМ ЛОГИКУ ОБЪЕДИНЕНИЯ B-C для НОВЫХ ЗАГОЛОВКОВ ---
+                    # Условие: первый элемент не __FOOTER__ (чтобы не конфликтовать), 
+                    # второй элемент (текст заголовка) есть, третий элемент (для колонки C) - None.
+                    if first_cell_val != '__FOOTER__' and len(row_values) > 2 and row_values[1] is not None and row_values[2] is None:
+                        try:
+                            # Объединяем B (колонка 2) и C (колонка 3)
+                            final_ws.merge_cells(start_row=cur, start_column=2, end_row=cur, end_column=3)
+                        except Exception as e:
+                            logging.warning(f"({client_session_id}) Не удалось объединить B-C для заголовка в строке {cur}: {e}")
+                                
+                logging.info(f"  ({client_session_id}) Добавлено {len(data_rows)} строк из {original_fname}")
 
             # --- Обновляем статус: Форматирование ---
             processing_status[client_session_id]["status"] = "Применение форматирования..."
             # ---------------------------------------
             # --- ПРИМЕНЕНИЕ ШИРИН И ФОРМАТИРОВАНИЯ ---
             if reference_widths: # Применяем референсные ширины, если они были успешно прочитаны
-                print(f"({client_session_id}) Применение референсных ширин...")
+                logging.info(f"({client_session_id}) Применение референсных ширин...")
                 apply_reference_widths(final_ws, reference_widths)
             else: # Иначе используем автоподбор
-                print(f"({client_session_id}) Автоподбор ширины колонок...")
+                logging.info(f"({client_session_id}) Автоподбор ширины колонок...")
                 auto_adjust_column_width(final_ws)
             # --- КОНЕЦ ИЗМЕНЕНИЙ В БЛОКЕ ПРИМЕНЕНИЯ ШИРИН ---
             apply_formatting(final_ws)
@@ -284,7 +338,7 @@ def upload_file():
             processing_status[client_session_id]["status"] = "Сохранение файла..."
             # -----------------------------------
             final_wb.save(output_file_path); final_wb.close()
-            print(f"({client_session_id}) Итоговый файл сохранен: {output_file_path}")
+            logging.info(f"({client_session_id}) Итоговый файл сохранен: {output_file_path}")
 
             # --- Успешный ответ ---
             final_message = "Обработка завершена."; download_url = url_for('download_file', filename=safe_output_filename)
@@ -301,13 +355,13 @@ def upload_file():
              raise ValueError(f"Недопустимый тип файла: {original_filename_unsafe}.")
 
     except ValueError as ve: # Ловим ошибки типа файла, распаковки, отсутствия данных
-         print(f"[ОШИБКА обработки] ({client_session_id}) {ve}")
+         logging.error(f"[ОШИБКА обработки] ({client_session_id}) {ve}")
          # --- Обновляем статус при ошибке ---
          if client_session_id in processing_status: processing_status[client_session_id]["status"] = "Ошибка"; processing_status[client_session_id]["error"] = str(ve)
          # ----------------------------------
          return jsonify({"success": False, "error": str(ve)}), 400
     except Exception as e: # Ловим все остальные ошибки
-        print(f"[КРИТИЧЕСКАЯ ОШИБКА] ({client_session_id}) /upload: {e}")
+        logging.error(f"[КРИТИЧЕСКАЯ ОШИБКА] ({client_session_id}) /upload: {e}")
         # --- Обновляем статус при ошибке ---
         if client_session_id in processing_status: processing_status[client_session_id]["status"] = "Критическая ошибка"; processing_status[client_session_id]["error"] = "Внутренняя ошибка сервера."
         # ----------------------------------
@@ -316,8 +370,8 @@ def upload_file():
     finally:
         # Очистка временной папки загрузок
         if os.path.exists(upload_path):
-            try: shutil.rmtree(upload_path); print(f"({client_session_id}) Очищена временная папка: {upload_path}")
-            except Exception as clean_err: print(f"[WARN] ({client_session_id}) Не удалось очистить {upload_path}: {clean_err}")
+            try: shutil.rmtree(upload_path); logging.info(f"({client_session_id}) Очищена временная папка: {upload_path}")
+            except Exception as clean_err: logging.warning(f"[WARN] ({client_session_id}) Не удалось очистить {upload_path}: {clean_err}")
         # Очистка статуса пока не реализована автоматически
 
 
@@ -339,7 +393,7 @@ def download_file(filename):
     # Мы предполагаем, что filename уже был очищен на этапе создания.
     # Убираем повторный вызов secure_filename, но проверяем на попытки выхода из папки.
     if '..' in filename or filename.startswith('/'):
-        print(f"[ПРЕДУПРЕЖДЕНИЕ] Попытка доступа к небезопасному пути: {filename}")
+        logging.warning(f"[ПРЕДУПРЕЖДЕНИЕ] Попытка доступа к небезопасному пути: {filename}")
         return "Недопустимое имя файла.", 400
 
     # Имя файла теперь используется как есть
@@ -347,9 +401,9 @@ def download_file(filename):
 
     file_path = os.path.join(app.config['RESULTS_FOLDER'], safe_filename)
     if not os.path.exists(file_path): return "Файл не найден.", 404
-    print(f"Отправка файла для скачивания: {safe_filename}")
+    logging.info(f"Отправка файла для скачивания: {safe_filename}")
     try: return send_from_directory(app.config['RESULTS_FOLDER'], safe_filename, as_attachment=True)
-    except Exception as e: print(f"Ошибка при отправке файла {safe_filename}: {e}"); return "Ошибка при отправке файла.", 500
+    except Exception as e: logging.error(f"Ошибка при отправке файла {safe_filename}: {e}"); return "Ошибка при отправке файла.", 500
 
 # --- Запуск приложения (без изменений) ---
 if __name__ == '__main__':
