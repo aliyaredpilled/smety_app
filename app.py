@@ -79,15 +79,39 @@ def upload_file():
     if not smeta_type: return jsonify(success=False, error="Тип сметы не выбран"), 400
     if not allowed_file(f.filename): return jsonify(success=False, error="Неподдерживаемый тип файла (разрешены: xlsx, xlsm, zip)"), 400
 
+    # Инициализируем статус сессии как можно раньше
+    processing_status[sess] = { 
+        "processed": 0, 
+        "total": 0, # Общее количество файлов будет обновлено позже, если это ZIP
+        "status": "Загрузка файла...", # Начальный статус
+        "error": None, 
+        "percent": calc_percent("upload", 0, 0) 
+    }
+
     work_dir = os.path.join(UPLOAD_FOLDER, sess)
     try:
-        shutil.rmtree(work_dir, ignore_errors=True)
+        logging.info(f"({sess}) Проверка существования рабочей папки (перед созданием новой): {work_dir}")
+        path_exists = os.path.exists(work_dir)
+        logging.info(f"({sess}) Результат проверки os.path.exists({work_dir}): {path_exists}")
+        if path_exists:
+            logging.info(f"({sess}) Попытка удаления рабочей папки (перед созданием новой): {work_dir}")
+            try:
+                shutil.rmtree(work_dir)
+                logging.info(f"({sess}) Рабочая папка {work_dir} успешно удалена (перед созданием новой).")
+            except Exception as e:
+                logging.error(f"({sess}) Ошибка при удалении рабочей папки {work_dir} (перед созданием новой): {e}")
+                # Решаем, нужно ли прерывать операцию, если папка не удалилась.
+                # В данном случае, создание новой папки может перезаписать старую,
+                # но если там остались файлы, которые не перезапишутся, могут быть проблемы.
+                # Пока оставим как есть, но это место для возможного улучшения.
         os.makedirs(work_dir, exist_ok=True)
     except OSError as e:
         logging.error(f"({sess}) Не удалось создать рабочую папку {work_dir}: {e}")
+        # Обновляем статус на ошибку, если не удалось создать папку
+        if sess in processing_status: # Сессия должна была быть инициализирована выше
+            processing_status[sess].update(status="Ошибка сервера", error=f"Ошибка файловой системы: {e}", percent=100)
         return jsonify(success=False, error="Ошибка файловой системы на сервере."), 500
 
-    processing_status[sess] = { "processed": 0, "total": 0, "status": "Загрузка...", "error": None, "percent": calc_percent("upload", 0, 0) }
     orig_filename = f.filename # <<< Сохраняем исходное имя файла
     logging.info(f"({sess}) Получено имя файла от клиента: '{orig_filename}'")
     is_zip = orig_filename.lower().endswith(".zip")
@@ -279,19 +303,52 @@ def upload_file():
     except ValueError as e:
         processing_status[sess].update(status="Ошибка подготовки", error=str(e), percent=100)
         logging.error(f"({sess}) Ошибка подготовки файлов: {e}")
-        shutil.rmtree(work_dir, ignore_errors=True)
+        logging.info(f"({sess}) Проверка существования рабочей папки (после ValueError): {work_dir}")
+        path_exists = os.path.exists(work_dir)
+        logging.info(f"({sess}) Результат проверки os.path.exists({work_dir}) (после ValueError): {path_exists}")
+        if path_exists:
+            logging.info(f"({sess}) Попытка удаления рабочей папки (после ValueError): {work_dir}")
+            try:
+                shutil.rmtree(work_dir)
+                logging.info(f"({sess}) Рабочая папка {work_dir} успешно удалена (после ValueError).")
+            except Exception as e_rm:
+                logging.error(f"({sess}) Ошибка при удалении рабочей папки {work_dir} (после ValueError): {e_rm}")
+        else:
+            logging.info(f"({sess}) Рабочая папка {work_dir} не найдена для удаления (после ValueError).")
         return jsonify(success=False, error=str(e)), 400
     except Exception as e:
         processing_status[sess].update(status="Критическая ошибка", error="Внутренняя ошибка сервера", percent=100)
         logging.exception(f"({sess}) Критическая ошибка на этапе подготовки")
-        shutil.rmtree(work_dir, ignore_errors=True)
+        logging.info(f"({sess}) Проверка существования рабочей папки (после критической ошибки Exception): {work_dir}")
+        path_exists = os.path.exists(work_dir)
+        logging.info(f"({sess}) Результат проверки os.path.exists({work_dir}) (после крит. ошибки Exception): {path_exists}")
+        if path_exists:
+            logging.info(f"({sess}) Попытка удаления рабочей папки (после критической ошибки Exception): {work_dir}")
+            try:
+                shutil.rmtree(work_dir)
+                logging.info(f"({sess}) Рабочая папка {work_dir} успешно удалена (после критической ошибки Exception).")
+            except Exception as e_rm:
+                logging.error(f"({sess}) Ошибка при удалении рабочей папки {work_dir} (после критической ошибки Exception): {e_rm}")
+        else:
+            logging.info(f"({sess}) Рабочая папка {work_dir} не найдена для удаления (после крит. ошибки Exception).")
         return jsonify(success=False, error="Внутренняя ошибка сервера."), 500
 
     if not files_to_proc:
          msg = "Нет файлов для обработки."
          processing_status[sess].update(status="Нет данных", error=msg, percent=100)
          logging.warning(f"({sess}) {msg}")
-         shutil.rmtree(work_dir, ignore_errors=True)
+         logging.info(f"({sess}) Проверка существования рабочей папки (нет файлов для обработки): {work_dir}")
+         path_exists = os.path.exists(work_dir)
+         logging.info(f"({sess}) Результат проверки os.path.exists({work_dir}) (нет файлов для обработки): {path_exists}")
+         if path_exists:
+             logging.info(f"({sess}) Попытка удаления рабочей папки (нет файлов для обработки): {work_dir}")
+             try:
+                 shutil.rmtree(work_dir)
+                 logging.info(f"({sess}) Рабочая папка {work_dir} успешно удалена (нет файлов для обработки).")
+             except Exception as e_rm:
+                 logging.error(f"({sess}) Ошибка при удалении рабочей папки {work_dir} (нет файлов для обработки): {e_rm}")
+         else:
+            logging.info(f"({sess}) Рабочая папка {work_dir} не найдена для удаления (нет файлов для обработки).")
          return jsonify(success=False, error=msg), 400
 
     # ───── Этап обработки файлов ─────
@@ -361,7 +418,18 @@ def upload_file():
         elif empty: error_msg = f"Все {len(empty)} файла(ов) оказались пустыми."
         processing_status[sess].update(status="Нет данных", error=error_msg, percent=100)
         logging.error(f"({sess}) {error_msg}")
-        shutil.rmtree(work_dir, ignore_errors=True)
+        logging.info(f"({sess}) Проверка существования рабочей папки (нет данных для итогового файла): {work_dir}")
+        path_exists = os.path.exists(work_dir)
+        logging.info(f"({sess}) Результат проверки os.path.exists({work_dir}) (нет данных для итог. файла): {path_exists}")
+        if path_exists:
+            logging.info(f"({sess}) Попытка удаления рабочей папки (нет данных для итогового файла): {work_dir}")
+            try:
+                shutil.rmtree(work_dir)
+                logging.info(f"({sess}) Рабочая папка {work_dir} успешно удалена (нет данных для итогового файла).")
+            except Exception as e_rm:
+                logging.error(f"({sess}) Ошибка при удалении рабочей папки {work_dir} (нет данных для итогового файла): {e_rm}")
+        else:
+            logging.info(f"({sess}) Рабочая папка {work_dir} не найдена для удаления (нет данных для итог. файла).")
         # Возвращаем списки ошибок/пустых
         return jsonify(success=False, error=error_msg, empty_files=empty, failed_files=fails), 400
 
@@ -430,7 +498,18 @@ def upload_file():
     except Exception as save_err:
         processing_status[sess].update(status="Ошибка сохранения", error=f"Не удалось сохранить итоговый файл: {save_err}", percent=100)
         logging.exception(f"({sess}) Не удалось сохранить итоговый файл")
-        shutil.rmtree(work_dir, ignore_errors=True)
+        logging.info(f"({sess}) Проверка существования рабочей папки (ошибка сохранения итогового файла): {work_dir}")
+        path_exists = os.path.exists(work_dir)
+        logging.info(f"({sess}) Результат проверки os.path.exists({work_dir}) (ошибка сохранения итог. файла): {path_exists}")
+        if path_exists:
+            logging.info(f"({sess}) Попытка удаления рабочей папки (ошибка сохранения итогового файла): {work_dir}")
+            try:
+                shutil.rmtree(work_dir)
+                logging.info(f"({sess}) Рабочая папка {work_dir} успешно удалена (ошибка сохранения итогового файла).")
+            except Exception as e_rm:
+                logging.error(f"({sess}) Ошибка при удалении рабочей папки {work_dir} (ошибка сохранения итогового файла): {e_rm}")
+        else:
+            logging.info(f"({sess}) Рабочая папка {work_dir} не найдена для удаления (ошибка сохранения итог. файла).")
         return jsonify(success=False, error="Ошибка сохранения итогового файла."), 500
 
     # Финальный статус и ответ клиенту
@@ -441,7 +520,18 @@ def upload_file():
     if fails:   info_parts.append(f"❌ Ошибки: {len(fails)}")
     final_message = "; ".join(info_parts) if info_parts else "Обработка завершена, но нет данных для отображения."
     logging.info(f"({sess}) Обработка успешно завершена. {final_message}")
-    shutil.rmtree(work_dir, ignore_errors=True)
+    logging.info(f"({sess}) Проверка существования рабочей папки (успешное завершение): {work_dir}")
+    path_exists = os.path.exists(work_dir)
+    logging.info(f"({sess}) Результат проверки os.path.exists({work_dir}) (успешное завершение): {path_exists}")
+    if path_exists:
+        logging.info(f"({sess}) Попытка удаления рабочей папки (успешное завершение): {work_dir}")
+        try:
+            shutil.rmtree(work_dir)
+            logging.info(f"({sess}) Рабочая папка {work_dir} успешно удалена (успешное завершение).")
+        except Exception as e_rm:
+            logging.error(f"({sess}) Ошибка при удалении рабочей папки {work_dir} (успешное завершение): {e_rm}")
+    else:
+        logging.info(f"({sess}) Рабочая папка {work_dir} не найдена для удаления (успешное завершение).")
 
     # Возвращаем результат, включая списки пустых/ошибок
     return jsonify(
@@ -458,7 +548,7 @@ def upload_file():
 def progress(session_id):
     """Возвращает статус обработки для указанной сессии."""
     status = processing_status.get(session_id, {
-        "status": "Сессия не найдена", "processed": 0, "total": 0, "percent": 0, "error": "ID сессии не найден на сервере."
+        "status": "Инициализация", "processed": 0, "total": 0, "percent": 0, "error": "ID сессии не найден на сервере."
     })
     return jsonify(status)
 
