@@ -176,6 +176,7 @@ button:disabled {
 #status-message {
     font-style: italic;
     color: #555;
+    white-space: pre-wrap; /* Добавлено для переноса строк */
 }
 
 /* Стили для контейнера результатов */

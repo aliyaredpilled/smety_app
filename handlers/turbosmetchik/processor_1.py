@@ -1,17 +1,16 @@
-# handlers/turbosmetchik/handler_v1.py
 import openpyxl
 import traceback
 # Используем АБСОЛЮТНЫЙ импорт utils
-from utils import is_likely_empty, check_merge, get_start_coord, get_item_id_nature # Заменили is_integer_like
+from utils import is_likely_empty, check_merge, get_start_coord, get_item_id_nature
 
 def process_turbosmetchik_1(input_path):
     """
-    ОБРАБАТЫВАЕТ один Excel файл по логике "Турбосметчик-1".
+    ОБРАБАТЫВАЕТ один Excel файл по НОВЫМ правилам "Турбосметчик-1".
     ВОЗВРАЩАЕТ данные (заголовки и координаты) для дальнейшей обработки.
     """
     output_headers = ["№№ п/п", "Шифр расценки и коды ресурсов", "Наименование работ и затрат", "Единица измерения", "Кол-во единиц", "ВСЕГО затрат, руб."]
     start_id_col_idx = 0    # A
-    # Для Турбосметчик-1:
+    # Для Турбосметчик-1 (цены, вероятно, остаются теми же):
     # - Цена для "Всего по позиции" (для item'ов в буфере) берется из колонки V.
     # - Цена для item'а с inline-ценой (merge V-W) берется из V.
     # - Цена для МАТЕРИАЛА (дробный номер) теперь тоже будет браться из V его строки.
@@ -27,7 +26,6 @@ def process_turbosmetchik_1(input_path):
     try:
         workbook = openpyxl.load_workbook(filename=input_path, data_only=True)
         if not workbook.sheetnames:
-            # print(f"Ошибка: Нет листов в файле '{input_path}'.")
             return None, None
         worksheet = workbook[workbook.sheetnames[0]]
 
@@ -40,33 +38,47 @@ def process_turbosmetchik_1(input_path):
             cell_A = row_cells[start_id_col_idx] if len(row_cells) > start_id_col_idx else None
             cell_A_value_str = str(getattr(cell_A, 'value', '')).strip() if cell_A else ""
 
+            # Получаем значение из ячейки C для правил футеров и "Всего по позиции"
+            cell_C = row_cells[2] if len(row_cells) > 2 else None # C - индекс 2
+            cell_C_value_str = str(getattr(cell_C, 'value', '')).strip() if cell_C else ""
+
             row_type = None
-            header_merge_coord = check_merge(worksheet, row_num, 0, 22) # A(0) - W(22)
-            footer_merge_coord_DK = check_merge(worksheet, row_num, 3, 10) # D(3) - K(10)
+            # НОВЫЕ ПРАВИЛА для определения типа строки:
+            
+            # 1. Проверка на заголовки (Раздел/Подраздел)
+            # Ячейки с A по K объединены (индексы 0-10)
+            header_merge_AK_coord = check_merge(worksheet, row_num, 0, 10) # A(0) - K(10)
 
-            cell_D = row_cells[3] if len(row_cells) > 3 else None
-            cell_D_value_str = str(getattr(cell_D, 'value', '')).strip() if cell_D else ""
-
-            if header_merge_coord and cell_A_value_str.startswith("Раздел"):
-                row_type = "section_header"
-            elif header_merge_coord and cell_A_value_str.startswith("Подраздел"):
-                row_type = "subsection_header"
-            elif footer_merge_coord_DK and cell_D_value_str.startswith("Итого по подразделу"):
-                row_type = "subsection_footer"
-            elif footer_merge_coord_DK and cell_D_value_str.startswith("Итого по разделу"):
-                 row_type = "section_footer"
+            if header_merge_AK_coord:
+                if cell_A_value_str.startswith("Раздел"):
+                    row_type = "section_header"
+                else: # Если A-K объединены и не начинается с "Раздел", то это подраздел
+                    row_type = "subsection_header"
             else:
-                dr_merge_coord = check_merge(worksheet, row_num, 3, 17) # D(3) - R(17)
-                cell_D_price_text_obj = row_cells[3] if len(row_cells) > 3 else None
-                if dr_merge_coord and cell_D_price_text_obj and str(getattr(cell_D_price_text_obj, 'value', '')).strip() == "Всего по позиции":
+                # 2. Проверка на футеры (Итоги)
+                # Ячейки с C по H объединены (индексы 2-7)
+                footer_merge_CH_coord = check_merge(worksheet, row_num, 2, 7) # C(2) - H(7)
+                if footer_merge_CH_coord:
+                    if cell_C_value_str.startswith("Итого по разделу"):
+                        row_type = "section_footer"
+                    elif cell_C_value_str.startswith("Итого по подразделу"):
+                        row_type = "subsection_footer"
+                # 3. Проверка на "Всего по позиции" (если не футер)
+                elif cell_C_value_str == "Всего по позиции":
+                     # По новым правилам, для "Всего по позиции" не указано объединение ячеек,
+                     # только значение в ячейке C.
                     row_type = "item_price_row"
                 else:
+                    # 4. Проверка на позицию (item)
                     if cell_A and cell_A.data_type != 'f' and not is_likely_empty(cell_A.value):
                          try:
                              float(str(cell_A.value).replace(',', '.').strip()) # Предварительная проверка на число
                              row_type = "item"
                          except (ValueError, TypeError):
-                             pass
+                             pass # Не число, значит не item по этому правилу
+
+            # --- Остальная логика обработки буферов и добавления данных ---
+            # Эта часть в основном остается прежней, но использует новые row_type
 
             if row_type in ["section_header", "subsection_header", "section_footer", "subsection_footer"] and active_items_buffer:
                 if first_section_found:
@@ -77,12 +89,14 @@ def process_turbosmetchik_1(input_path):
                 if first_section_found:
                     if pending_subsection_header: processed_rows_list.append(pending_subsection_header)
                     if pending_section_header: processed_rows_list.append(pending_section_header)
-                pending_section_header = {"type": "header", "level": "section", "start_row": row_num, "col_1_coord": header_merge_coord, "col_3_value": cell_A_value_str, "col_6_coord": None}
+                # Используем header_merge_AK_coord для col_1_coord
+                pending_section_header = {"type": "header", "level": "section", "start_row": row_num, "col_1_coord": header_merge_AK_coord, "col_3_value": cell_A_value_str, "col_6_coord": None}
                 pending_subsection_header = None
                 first_section_found = True
             elif row_type == "subsection_header":
                 if first_section_found and pending_subsection_header: processed_rows_list.append(pending_subsection_header)
-                pending_subsection_header = {"type": "header", "level": "subsection", "start_row": row_num, "col_1_coord": header_merge_coord, "col_3_value": cell_A_value_str, "col_6_coord": None}
+                # Используем header_merge_AK_coord для col_1_coord
+                pending_subsection_header = {"type": "header", "level": "subsection", "start_row": row_num, "col_1_coord": header_merge_AK_coord, "col_3_value": cell_A_value_str, "col_6_coord": None}
             elif row_type == "subsection_footer":
                  if pending_subsection_header:
                     cell_V_footer = row_cells[item_total_cost_col_idx] if len(row_cells) > item_total_cost_col_idx else None
@@ -109,13 +123,14 @@ def process_turbosmetchik_1(input_path):
                      processed_rows_list.extend(active_items_buffer)
                      active_items_buffer = []
             elif row_type == "item":
-                if first_section_found and cell_A: # Убедимся, что cell_A существует
+                if first_section_found and cell_A:
                     item_id_type = get_item_id_nature(cell_A.value)
                     
-                    if item_id_type == "not_a_number": # Если это не числовой ID, пропускаем
+                    if item_id_type == "not_a_number":
                         continue
 
                     item_data = {"type": "item", "start_row": row_num, "col_6_coord": None}
+                    # Маппинг колонок для item остается тем же
                     # Вход T1: A(0)   B(1)    D(3)           L(11)       M(12)
                     input_indices_map = {1: 0, 2: 1, 3: 3, 4: 11, 5: 12}
 
@@ -124,29 +139,27 @@ def process_turbosmetchik_1(input_path):
                         item_data[f"col_{out_col_num}_coord"] = getattr(cell_to_map, 'coordinate', None)
                     
                     if item_id_type == "decimal": # Это МАТЕРИАЛ
-                        # Цена для материала берется из колонки V (item_total_cost_col_idx) ТЕКУЩЕЙ строки
                         cell_V_material = row_cells[item_total_cost_col_idx] if len(row_cells) > item_total_cost_col_idx else None
                         item_data["col_6_coord"] = getattr(cell_V_material, 'coordinate', None)
-                        processed_rows_list.append(item_data) # Материалы добавляются сразу
+                        processed_rows_list.append(item_data)
 
                     elif item_id_type == "integer": # Это ОСНОВНАЯ ПОЗИЦИЯ
                         inline_price_coord = None
-                        # Проверяем наличие цены в этой же строке (merge V-W)
-                        # V - item_total_cost_col_idx (21)
-                        # W - item_total_cost_col_idx + 1 (22)
+                        # Проверка на inline-цену (merge V-W) остается той же
                         merge_VW_coord = check_merge(worksheet, row_num, item_total_cost_col_idx, item_total_cost_col_idx + 1)
                         if merge_VW_coord:
                             cell_V_inline = row_cells[item_total_cost_col_idx] if len(row_cells) > item_total_cost_col_idx else None
                             if cell_V_inline and not is_likely_empty(cell_V_inline.value):
-                                inline_price_coord = get_start_coord(merge_VW_coord) # Берем начало merge
+                                inline_price_coord = get_start_coord(merge_VW_coord)
                         
                         if inline_price_coord:
-                            # Если цена найдена в строке (inline), присваиваем и добавляем
                             item_data["col_6_coord"] = inline_price_coord
                             processed_rows_list.append(item_data)
                         else:
-                            # Если цена не найдена (или номер дробный), добавляем item в буфер
                             active_items_buffer.append(item_data)
+
+        # --- Финальная обработка и возврат данных ---
+        # Эта часть также остается в основном без изменений
 
         if first_section_found:
             if active_items_buffer: processed_rows_list.extend(active_items_buffer)
@@ -173,13 +186,12 @@ def process_turbosmetchik_1(input_path):
         return output_headers, all_coords_data
 
     except FileNotFoundError:
-        # print(f"[ОШИБКА] Файл не найден: {input_path}") # Убираем print для чистоты
         return None, None
     except Exception as e:
-        print(f"[КРИТИЧЕСКАЯ ОШИБКА] при обработке файла '{input_path}' (Турбосметчик-1): {e}")
+        print(f"[КРИТИЧЕСКАЯ ОШИБКА] при обработке файла '{input_path}' (Турбосметчик-1, НОВЫЕ ПРАВИЛА): {e}")
         print("-" * 60); traceback.print_exc(); print("-" * 60)
         return None, None
     finally:
         if workbook:
             try: workbook.close()
-            except Exception: pass # Игнорируем ошибки закрытия
+            except Exception: pass

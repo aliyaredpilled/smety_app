@@ -10,62 +10,82 @@ document.addEventListener('DOMContentLoaded', () => {
     const downloadLink = document.getElementById('download-link');
     const errorContainer = document.getElementById('error-container');
 
-    // === Новые элементы ===
-    // Убираем определения элементов отсюда:
-    // const smetaTypeSelect = document.getElementById('smeta_type');
-    // const fileInput = document.getElementById('file');
-    // const turbosmetchikVersionGroup = document.getElementById('turbosmetchik-version-group');
-    // const turbosmetchikVersionSelect = document.getElementById('turbosmetchik_version');
-    // =====================
+    // --- НОВЫЙ ЭЛЕМЕНТ ДЛЯ ДЕТАЛЕЙ ОТЧЕТА ---
+    const reportDetailsContainer = document.getElementById('report-details');
+    // --- КОНЕЦ НОВОГО ЭЛЕМЕНТА ---
 
-    let progressInterval = null; // Переменная для хранения ID интервала
 
-    // Функция для генерации простого уникального ID сессии
+    let progressInterval = null;
+
     function generateClientSessionId() {
         return Date.now() + '-' + Math.random().toString(36).substring(2, 15);
     }
 
-    // Функция для запроса прогресса
     async function pollProgress(sessionId) {
         try {
             const response = await fetch(`/progress/${sessionId}`);
             if (!response.ok) {
-                // Если сервер не отвечает или ошибка, прекращаем поллинг
                 console.error('Ошибка запроса прогресса:', response.status);
                 stopPolling();
                 return;
             }
             const data = await response.json();
 
-            // Обновляем прогресс бар
-            let percentage = 0;
-            if (data.total > 0) {
-                percentage = Math.round((data.processed / data.total) * 100);
-            } else if (data.status && data.status !== "Ошибка" && data.status !== "Готово" && data.status !== "Не найдено") {
-                 // Если total еще 0, но идет работа (например, распаковка), показываем небольшой прогресс
-                 percentage = 10; // Или другое значение
+            // Обновляем прогресс бар на основе data.percent от сервера
+            if (progressBar && typeof data.percent !== 'undefined') {
+                progressBar.style.width = `${data.percent}%`;
+                progressBar.textContent = `${data.percent}%`; // Показываем процент на баре
             }
-            // Проверяем progressBar перед использованием
-            if (progressBar) progressBar.style.width = `${percentage}%`;
 
-            // Обновляем текстовый статус
-            // Проверяем statusMessage перед использованием
+
             if (statusMessage && data.status) {
-                statusMessage.textContent = data.status;
+                let statusText = data.status;
+                // Улучшенная проверка и форматирование статуса
+                if (typeof statusText === 'string' && statusText.startsWith('Обработка')) {
+                    const separatorIndex = statusText.indexOf(': ');
+                    if (separatorIndex !== -1) {
+                        // Нашли ": ", разделяем строку
+                        const prefix = statusText.substring(0, separatorIndex);
+                        let pathPart = statusText.substring(separatorIndex + 2);
+
+                        // Удаляем возможное многоточие в конце пути
+                        if (pathPart.endsWith('...')) {
+                            pathPart = pathPart.slice(0, -3);
+                        }
+
+                        // Заменяем слеши только в части с путем
+                        const formattedPath = pathPart.replace(/\//g, ' /\n');
+                        
+                        // Собираем обратно с переносом строки ПОСЛЕ двоеточия
+                        statusText = prefix + ':\n' + formattedPath; 
+                    } else if (statusText.includes('/')) {
+                         // Если ": " нет, но есть слеши (старое поведение как fallback)
+                         // Удаляем многоточие и здесь на всякий случай?
+                         if (statusText.endsWith('...')) {
+                             statusText = statusText.slice(0, -3);
+                         }
+                         statusText = statusText.replace(/\//g, ' /\n'); 
+                    }
+                    // Если нет ни ": ", ни '/', оставляем как есть
+                }
+                statusMessage.textContent = statusText;
             }
 
-            // Если есть ошибка от сервера или статус "Готово" или "Ошибка", останавливаем поллинг
-            if (data.error || data.status === "Готово" || data.status === "Ошибка") {
+            if (data.error || data.status === "Готово" || data.status === "Ошибка" || data.status === "Сессия не найдена") {
                 stopPolling();
+                 // Если финальный статус, но progressBar не 100, доводим его
+                if ((data.status === "Готово" || data.status === "Ошибка") && progressBar && progressBar.style.width !== '100%') {
+                    progressBar.style.width = '100%';
+                    progressBar.textContent = '100%';
+                }
             }
 
         } catch (error) {
             console.error('Сетевая ошибка при запросе прогресса:', error);
-            stopPolling(); // Останавливаем при сетевых ошибках
+            stopPolling();
         }
     }
 
-    // Функция для остановки поллинга
     function stopPolling() {
         if (progressInterval) {
             clearInterval(progressInterval);
@@ -73,105 +93,99 @@ document.addEventListener('DOMContentLoaded', () => {
             console.log("Поллинг прогресса остановлен.");
         }
     }
+    
+    // Функция для экранирования HTML (важно для безопасности)
+    function escapeHtml(unsafe) {
+        if (typeof unsafe !== 'string') {
+            if (unsafe === null || typeof unsafe === 'undefined') return '';
+            unsafe = String(unsafe);
+        }
+        return unsafe
+             .replace(/&/g, "&amp;")
+             .replace(/</g, "&lt;")
+             .replace(/>/g, "&gt;")
+             .replace(/"/g, "&quot;")
+             .replace(/'/g, "&#039;");
+    }
 
-    // === Новая функция: Проверка валидности формы и управление UI ===
+
     function checkFormValidity() {
-        // Получаем ВСЕ нужные элементы здесь:
         const smetaTypeSelect = document.getElementById('smeta_type');
         const fileInput = document.getElementById('file');
         const turbosmetchikVersionGroup = document.getElementById('turbosmetchik-version-group');
         const turbosmetchikVersionSelect = document.getElementById('turbosmetchik_version');
-        // const submitButton = document.getElementById('submit-button'); // Кнопку можно не получать, если не меняем disabled
 
-        // Проверяем, что основные элементы формы найдены
         if (!smetaTypeSelect || !fileInput || !turbosmetchikVersionGroup || !turbosmetchikVersionSelect) {
             console.error("Один или несколько элементов формы не найдены в checkFormValidity!");
-            return; // Прерываем выполнение, если чего-то нет
+            return;
         }
 
-        // const fileSelected = fileInput.files.length > 0; // Можно убрать, если не используется
         const mainTypeSelected = smetaTypeSelect.value;
 
-        // Логика показа/скрытия и required для версии Турбосметчика остается
         if (mainTypeSelected === 'Турбосметчик') {
             turbosmetchikVersionGroup.style.display = 'block';
             turbosmetchikVersionSelect.required = true;
-            // versionSelected = turbosmetchikVersionSelect.value !== ''; // Не используется для disabled
         } else {
             turbosmetchikVersionGroup.style.display = 'none';
             turbosmetchikVersionSelect.required = false;
             turbosmetchikVersionSelect.value = '';
         }
-
-        // --- УДАЛЯЕМ УПРАВЛЕНИЕ КНОПКОЙ И ЛОГ --- 
-        /*
-        const submitButton = document.getElementById('submit-button');
-        if(submitButton) {
-            // ... (код установки disabled) ... 
-            console.log('[DEBUG] Состояние кнопки disabled:', submitButton.disabled);
-        }
-        */
-        // ---------------------------------------
     }
-    // ===================================================================
 
-    // === Обработка выбора основного типа сметы ===
     const initialSmetaTypeSelect = document.getElementById('smeta_type');
     if (initialSmetaTypeSelect) {
         initialSmetaTypeSelect.addEventListener('change', checkFormValidity);
     } else {
         console.error("Не удалось найти smeta_type для добавления слушателя");
     }
-    // ========================================================
 
-    // === Обработка выбора версии Турбосметчика ===
     const initialTurbosmetchikVersionSelect = document.getElementById('turbosmetchik_version');
     if (initialTurbosmetchikVersionSelect) {
         initialTurbosmetchikVersionSelect.addEventListener('change', checkFormValidity);
     } else {
         console.error("Не удалось найти turbosmetchik_version для добавления слушателя");
     }
-    // =========================================================
 
-    // === Обработка выбора файла ===
     const initialFileInput = document.getElementById('file');
     if (initialFileInput) {
         initialFileInput.addEventListener('change', checkFormValidity);
     } else {
         console.error("Не удалось найти file input для добавления слушателя");
     }
-    // ============================================
 
-    if (form) { // Проверяем, найдена ли форма
+    if (form) {
         form.addEventListener('submit', async (event) => {
-            event.preventDefault(); // Оставляем preventDefault, т.к. отправка асинхронная
+            event.preventDefault();
             stopPolling();
 
-            // --- УДАЛЯЕМ БЛОКИРОВКУ КНОПКИ ЗДЕСЬ --- 
-            /*
-            const submitButtonOnSubmit = document.getElementById('submit-button'); 
-            if (submitButtonOnSubmit) submitButtonOnSubmit.disabled = true;
-            */
-           // ---------------------------------------
-
-            // Показываем прогресс и статус
             if(progressContainer) progressContainer.style.display = 'block';
-            if(progressBar) progressBar.style.width = '0%';
-            // if(progressBar) progressBar.textContent = ''; // Очищаем текст на баре (если был)
+            if(progressBar) {
+                progressBar.style.width = '0%';
+                progressBar.textContent = '0%'; // Обновляем текст на баре
+            }
             if(statusMessage) statusMessage.textContent = 'Загрузка файла...';
             if(resultContainer) resultContainer.style.display = 'none';
-            if(errorContainer) errorContainer.style.display = 'none';
-            if(errorContainer) errorContainer.textContent = '';
+            if(downloadLink) downloadLink.href = '#'; // Сброс ссылки
+            if(downloadLink) downloadLink.textContent = ''; // Сброс текста кнопки/ссылки
+            if(errorContainer) {
+                errorContainer.style.display = 'none';
+                errorContainer.textContent = '';
+            }
+            // --- СБРОС ДЕТАЛЕЙ ОТЧЕТА ---
+            if(reportDetailsContainer) {
+                reportDetailsContainer.innerHTML = '';
+                reportDetailsContainer.style.display = 'none';
+            }
+            // --- КОНЕЦ СБРОСА ---
 
-            // Получаем актуальные значения элементов формы ПЕРЕД отправкой
+
             const currentFileInput = document.getElementById('file');
             const currentSmetaTypeSelect = document.getElementById('smeta_type');
             const currentTurbosmetchikVersionSelect = document.getElementById('turbosmetchik_version');
 
             if (!currentFileInput || !currentSmetaTypeSelect || !currentTurbosmetchikVersionSelect) {
                  console.error("Ошибка: Не найдены элементы формы при отправке!");
-                 if(progressContainer) progressContainer.style.display = 'none'; // Скрываем прогресс при ошибке
-                 if(submitButtonOnSubmit) submitButtonOnSubmit.disabled = false; // Разблокируем кнопку
+                 if(progressContainer) progressContainer.style.display = 'none';
                  return;
             }
             if (currentFileInput.files.length === 0) {
@@ -181,7 +195,6 @@ document.addEventListener('DOMContentLoaded', () => {
                       errorContainer.textContent = 'Ошибка: Файл не выбран.';
                       errorContainer.style.display = 'block';
                  }
-                 if(submitButtonOnSubmit) submitButtonOnSubmit.disabled = false; // Разблокируем кнопку
                  return;
             }
 
@@ -199,11 +212,9 @@ document.addEventListener('DOMContentLoaded', () => {
             formData.append('smeta_type', finalSmetaType);
             console.log("Отправляемый тип сметы:", finalSmetaType);
 
-            // --- Запускаем поллинг прогресса ---
             progressInterval = setInterval(() => {
                 pollProgress(clientSessionId);
-            }, 1500); // Запрашивать каждые 1.5 секунды
-            // ---------------------------------
+            }, 1500);
 
             try {
                 const response = await fetch('/upload', {
@@ -211,67 +222,152 @@ document.addEventListener('DOMContentLoaded', () => {
                     body: formData,
                 });
 
-                stopPolling();
+                stopPolling(); // Останавливаем поллинг сразу после получения ответа
 
-                const data = await response.json();
+                const responseBodyText = await response.text(); // Сначала читаем как текст
 
-                 // Небольшая задержка перед скрытием прогресс-бара, если успешно
-                if (response.ok && data.success) {
-                    if(progressBar) progressBar.style.width = '100%';
-                    if(statusMessage) statusMessage.textContent = data.message || 'Готово';
-                    await new Promise(resolve => setTimeout(resolve, 500));
-                }
-                 if(progressContainer) progressContainer.style.display = 'none'; // Скрываем прогресс
-
-
-                if (response.ok && data.success) {
-                    if(resultMessage) resultMessage.textContent = data.message || 'Обработка успешно завершена!';
-                    if(downloadLink) downloadLink.href = data.download_url;
-                    let buttonText = "Скачать результат";
-                    if (data.download_filename) {
-                       if(downloadLink) downloadLink.setAttribute('download', data.download_filename);
-                        if (data.download_filename.toLowerCase().endsWith('.zip')) buttonText = "Скачать результаты (ZIP)";
-                        else if (data.download_filename.toLowerCase().endsWith('.xlsx') || data.download_filename.toLowerCase().endsWith('.xlsm')) buttonText = "Скачать результат (Excel)";
-                        else { const parts = data.download_filename.split('.'); const extension = parts.length > 1 ? parts.pop() : 'файл'; buttonText = `Скачать (${extension.toUpperCase()})`; }
-                    } else if(downloadLink) downloadLink.removeAttribute('download');
-                    if(downloadLink) downloadLink.textContent = buttonText;
-                    if(resultContainer) resultContainer.style.display = 'block';
-                    if(errorContainer) errorContainer.style.display = 'none';
-                } else {
-                    throw new Error(data.error || `Ошибка сервера: ${response.status}`);
+                let data;
+                try {
+                    data = JSON.parse(responseBodyText); // Пытаемся парсить JSON
+                } catch (parseError) {
+                    if(errorContainer) {
+                         errorContainer.textContent = `Ошибка: Не удалось обработать ответ сервера (не JSON?). Статус: ${response.status}. Ответ: ${responseBodyText}`;
+                         errorContainer.style.display = 'block';
+                    }
+                    if(progressContainer) progressContainer.style.display = 'none';
+                    if(resultContainer) resultContainer.style.display = 'none';
+                    return; // Прекращаем дальнейшую обработку
                 }
 
-            } catch (error) {
+                // Обновляем UI в зависимости от ответа
+                if (response.ok) { // Код 200-299
+                    if (data.success) {
+                        if(progressBar) {
+                            progressBar.style.width = '100%';
+                            progressBar.textContent = '100%';
+                        }
+                        if(statusMessage) {
+                            let statusText = data.message || 'Готово!';
+                            if (typeof statusText === 'string' && statusText.includes('/') && statusText.startsWith('Обработка')) {
+                                statusText = statusText.replace(/\//g, ' /\n'); 
+                            }
+                            statusMessage.textContent = statusText;
+                        }
+                        
+                        await new Promise(resolve => setTimeout(resolve, 300)); 
+                        
+                        if(resultMessage) {
+                            resultMessage.textContent = data.message || 'Обработка успешно завершена!';
+                        }
+
+                        if(downloadLink && data.download_url) {
+                            downloadLink.href = data.download_url;
+                            let buttonText = "Скачать результат";
+                            if (data.download_filename) {
+                               downloadLink.setAttribute('download', data.download_filename);
+                               buttonText = `Скачать: ${escapeHtml(data.download_filename)}`;
+                            }
+                            downloadLink.textContent = buttonText;
+                            downloadLink.style.display = 'inline-block'; // Показываем ссылку
+                        } else if(downloadLink) { // Проверяем еще раз, что он есть, перед скрытием
+                            downloadLink.style.display = 'none'; // Скрываем, если нет URL
+                        }
+
+                        if(resultContainer) {
+                            resultContainer.style.display = 'block';
+                        }
+
+                        if(errorContainer) {
+                            errorContainer.style.display = 'none';
+                        }
+
+                        if (reportDetailsContainer) {
+                            let reportHtml = '';
+                            if (data.empty_files && data.empty_files.length > 0) {
+                                reportHtml += '<h4>⚠️ Пустые файлы (' + data.empty_files.length + '):</h4><ul>';
+                                data.empty_files.forEach(filename => {
+                                    reportHtml += '<li>' + escapeHtml(filename) + '</li>';
+                                });
+                                reportHtml += '</ul>';
+                            }
+                            if (data.failed_files && data.failed_files.length > 0) {
+                                reportHtml += '<h4 style="margin-top:15px;">❌ Файлы с ошибками обработки (' + data.failed_files.length + '):</h4><ul>';
+                                data.failed_files.forEach(filename => {
+                                    reportHtml += '<li>' + escapeHtml(filename) + '</li>';
+                                });
+                                reportHtml += '</ul>';
+                            }
+
+                            if (reportHtml) {
+                                reportDetailsContainer.innerHTML = reportHtml;
+                                reportDetailsContainer.style.display = 'block';
+                            } else {
+                                reportDetailsContainer.style.display = 'none';
+                            }
+                        }
+                    } else { // data.success === false (ошибка от бэкенда, но HTTP OK)
+                        if(progressContainer) progressContainer.style.display = 'none';
+                        if(errorContainer) {
+                             errorContainer.innerHTML = `<b>Ошибка обработки:</b> ${escapeHtml(data.error || 'Неизвестная ошибка')}`;
+                             errorContainer.style.display = 'block';
+                        }
+                        
+                        if (reportDetailsContainer) {
+                            let errorReportHtml = '';
+                            if (data.empty_files && data.empty_files.length > 0) {
+                                errorReportHtml += '<h4>⚠️ Обнаружены пустые файлы (' + data.empty_files.length + '):</h4><ul>';
+                                data.empty_files.forEach(filename => {
+                                    errorReportHtml += '<li>' + escapeHtml(filename) + '</li>';
+                                });
+                                errorReportHtml += '</ul>';
+                            }
+                            if (data.failed_files && data.failed_files.length > 0) {
+                                errorReportHtml += '<h4 style="margin-top:15px;">❌ Файлы с ошибками обработки (' + data.failed_files.length + '):</h4><ul>';
+                                data.failed_files.forEach(filename => {
+                                    errorReportHtml += '<li>' + escapeHtml(filename) + '</li>';
+                                });
+                                errorReportHtml += '</ul>';
+                            }
+
+                            if (errorReportHtml) {
+                                reportDetailsContainer.innerHTML = errorReportHtml;
+                                reportDetailsContainer.style.display = 'block';
+                            } else {
+                                reportDetailsContainer.style.display = 'none';
+                            }
+                        }
+                        if(resultContainer) resultContainer.style.display = 'none';
+                    }
+                } else { // HTTP ошибка (не 2xx)
+                    if(progressContainer) progressContainer.style.display = 'none';
+                    let errorMsg = `Ошибка сервера: ${response.status}`;
+                    errorMsg += ` - ${responseBodyText}`;
+                    if(errorContainer) {
+                         errorContainer.textContent = errorMsg;
+                         errorContainer.style.display = 'block';
+                    }
+                    if(resultContainer) resultContainer.style.display = 'none';
+                }
+
+            } catch (error) { // Сетевая ошибка при fetch('/upload') или другая ошибка до обработки ответа
                 stopPolling();
-                console.error('Ошибка при отправке или обработке:', error);
+                console.error('Ошибка при отправке/обработке ответа:', error); // Более общее сообщение
                 if(progressContainer) progressContainer.style.display = 'none';
                 if(errorContainer) {
-                     errorContainer.textContent = `Произошла ошибка: ${error.message}`;
+                     errorContainer.textContent = `Произошла ошибка: ${error.message || error}`;
                      errorContainer.style.display = 'block';
                 }
                 if(resultContainer) resultContainer.style.display = 'none';
             } finally {
-                // Очистка полей остается, НО НЕ ФАЙЛА
                 const finalFileInput = document.getElementById('file');
-                // Удаляем строку ниже:
-                // Строка ниже была удалена
-
-                // --- УДАЛЯЕМ РАЗБЛОКИРОВКУ КНОПКИ ЗДЕСЬ ---
-                /*
-                const submitButtonFinally = document.getElementById('submit-button');
-                if (submitButtonFinally) submitButtonFinally.disabled = false;
-                */
-                // ---------------------------------------
-
-                // Вызов checkFormValidity в конце нужен, чтобы скрыть/показать поле версии
+                 if (finalFileInput) {
+                    // Не очищаем файл, чтобы пользователь мог его скачать или отправить снова
+                }
                 checkFormValidity();
             }
         });
     } else {
         console.error("Форма с id 'upload-form' не найдена!");
     }
-
-    // Вызов checkFormValidity при загрузке нужен только для установки видимости поля версии
-    checkFormValidity(); 
-
+    checkFormValidity();
 });

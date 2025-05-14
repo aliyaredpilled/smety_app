@@ -6,6 +6,7 @@ from handlers.smeta_ru.processor import process_smeta_ru
 from handlers.turbosmetchik.processor_1 import process_turbosmetchik_1
 from handlers.turbosmetchik.processor_2 import process_turbosmetchik_2
 from handlers.turbosmetchik.processor_3 import process_turbosmetchik_3
+from handlers.grandsmeta.processor import process_grandsmeta_mixed
 
 # --- Словарь для выбора функции обработки ---
 PROCESSORS = {
@@ -13,6 +14,7 @@ PROCESSORS = {
     "Турбосметчик-1": process_turbosmetchik_1,
     "Турбосметчик-2": process_turbosmetchik_2,
     "Турбосметчик-3": process_turbosmetchik_3,
+    "Грандсмета": process_grandsmeta_mixed,
 }
 
 def get_available_processor_types():
@@ -57,4 +59,4 @@ def run_processor(smeta_type, input_path):
             return None, None
     else:
         print(f"[ОШИБКА] Обработчик для типа '{smeta_type}' не найден в словаре PROCESSORS.")
-        return None, None 
+        return None, None  
